@@ -1,0 +1,77 @@
+name: Deploy FastAPI App (prod)
+
+on:
+  push:
+    branches: ["prod"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy & Restart FastAPI on VM
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            set -e
+
+            APP_DIR="/home/azureuser/Fast-API-practice"
+            SERVICE_NAME="fastapi-app"
+            PYTHON_ENV="$APP_DIR/venv"
+
+            echo ">>> Switching to app folder"
+            cd $APP_DIR
+
+            echo ">>> Fetching prod branch"
+            git fetch origin
+            git checkout prod
+            git pull origin prod
+
+            echo ">>> Creating virtual environment (if not exists)"
+            if [ ! -d "$PYTHON_ENV" ]; then
+              python3 -m venv $PYTHON_ENV
+            fi
+
+            echo ">>> Activating venv"
+            source $PYTHON_ENV/bin/activate
+
+            echo ">>> Installing dependencies"
+            pip install -r requirements.txt
+
+            echo ">>> Creating / updating systemd service"
+            sudo bash -c "cat > /etc/systemd/system/$SERVICE_NAME.service" <<EOF
+            [Unit]
+            Description=FastAPI App Service
+            After=network.target
+
+            [Service]
+            User=azureuser
+            WorkingDirectory=$APP_DIR
+            Environment=PATH=$PYTHON_ENV/bin
+            ExecStart=$PYTHON_ENV/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+            Restart=always
+            RestartSec=5
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            echo ">>> Reloading systemd"
+            sudo systemctl daemon-reload
+
+            echo ">>> Enabling service"
+            sudo systemctl enable $SERVICE_NAME
+
+            echo ">>> Restarting service"
+            sudo systemctl restart $SERVICE_NAME
+
+            echo ">>> Checking status"
+            sudo systemctl status $SERVICE_NAME --no-pager -l || true
+
+            echo ">>> Deployment completed successfully"
